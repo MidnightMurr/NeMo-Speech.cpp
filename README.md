@@ -26,29 +26,28 @@ export PATH="$HOME/.local/bin:$PATH"  # current shell; future shells are updated
 
 The source build requires Git, CMake 3.26 or newer, Ninja, a C++17 compiler,
 and the toolkit for the selected GPU backend. See
-[Installation](docs/install.md) for platform-specific prerequisites and
-options. The same installer will support native release archives once their
-public URL is configured.
+[Installation](docs/install.md) for platform-specific prerequisites, options,
+and the native release-archive flow.
 
 ## Quick start
 
-The runtime consumes GGUF models. Until the preconverted GGUF is published,
-use the included converter to download the public `.nemo` checkpoint and
-produce a portable Q8 model. Complete the one-time
-[conversion setup](docs/model-conversion.md) first; it does not install NeMo.
+Download the ready-to-run Q8 GGUF from the model's Hugging Face repository,
+then transcribe the bundled sample:
 
 ```bash
-python3 convert_model.py nvidia/nemotron-speech-streaming-en-0.6b \
-  --outfile nemotron-speech-streaming-en-0.6b.q8_0.gguf
+hf download nvidia/nemotron-speech-streaming-en-0.6b \
+  nemotron-speech-streaming-en-0.6b.q8_0.gguf \
+  --local-dir models
 
 nemo-speech transcribe test_files/asr/wav/test/jfk.wav \
-  --model nemotron-speech-streaming-en-0.6b.q8_0.gguf
+  --model models/nemotron-speech-streaming-en-0.6b.q8_0.gguf
 ```
 
-The converter downloads only the `.nemo` checkpoint through the standard
-Hugging Face cache. The CLI selects an available backend and handles common
-mono or stereo PCM WAV sample rates automatically. Substitute your own WAV
-file after verifying the bundled sample.
+Install the `hf` command with `pip install -U huggingface_hub` if needed. The
+CLI selects an available backend and handles common mono or stereo PCM WAV
+sample rates automatically. Substitute your own WAV file after verifying the
+bundled sample. See [ASR models](docs/asr/models.md) for the other published
+GGUFs and [model conversion](docs/model-conversion.md) for custom checkpoints.
 
 ## Command line
 
@@ -63,7 +62,7 @@ Start the same runtime as a local HTTP service and open the playground:
 
 ```bash
 nemo-speech serve \
-  --asr-model nemotron-speech-streaming-en-0.6b.q8_0.gguf \
+  --asr-model models/nemotron-speech-streaming-en-0.6b.q8_0.gguf \
   --open
 ```
 
@@ -89,10 +88,8 @@ gRPC usage.
 
 ## Build from source
 
-For a CUDA ASR and TTS server with the playground from an initialized checkout:
-
-Requires CMake 3.26 or newer, Ninja, C and C++17 compilers, and a supported CUDA
-toolkit.
+Requires CMake 3.26 or newer, Ninja, C and C++17 compilers, and a supported
+CUDA toolkit. For a CUDA ASR and TTS server with the playground:
 
 ```bash
 git submodule update --init ggml third_party/cpp-httplib
@@ -113,6 +110,7 @@ Windows, and container instructions are in
 | [CLI guide](docs/cli.md) | Transcription, subtitles, directories, diarization, NMT, TTS, and tooling |
 | [Model conversion](docs/model-conversion.md) | Convert NeMo and Hugging Face checkpoints to runtime GGUF files |
 | [Servers](docs/server.md) | HTTP playground/realtime serving and the separate Riva-compatible gRPC server |
+| [HTTP API reference](docs/api.md) | Every endpoint's request fields, responses, and the realtime protocol |
 | [Native SDK](docs/sdk.md) | CMake components, C ABI lifetimes, threading, and examples |
 | [Client integration](docs/clients.md) | OpenAI SDKs, curl, and Riva gRPC clients |
 | [Troubleshooting](docs/troubleshooting.md) | `doctor` output and common runtime failures |

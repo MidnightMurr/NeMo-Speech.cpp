@@ -3,7 +3,9 @@
 The current public installation path builds and installs the backend-matched
 ASR, diarization, and TTS CLI, HTTP API, realtime WebSocket endpoint, and browser
 playground from a source checkout. Models are distributed separately and are
-never downloaded when the server starts.
+never downloaded when the server starts. Ready-to-run GGUFs are available from
+the linked Hugging Face repositories in the [ASR](asr/models.md) and
+[TTS](tts/models.md) model guides.
 
 The installers also contain the native release flow. Once a public release URL
 is configured, they prefer release archives containing the CLI, runtime
@@ -28,10 +30,9 @@ scripts/install.sh --source --backend cpu
 ```
 
 It installs without `sudo` and links the CLI into `~/.local/bin`. Run `--help`
-to see prefix, backend, PATH, and dry-run options. After the public release URL
-is configured, downloaded archives are verified against their published
-SHA-256 files; a present archive with an invalid or mismatched checksum always
-fails rather than falling back to source.
+to see prefix, backend, PATH, and dry-run options. Downloaded archives are
+verified against their published SHA-256 files; an archive with an invalid or
+mismatched checksum always fails rather than falling back to source.
 
 The source fallback requires Git, CMake 3.26 or newer, Ninja, a C++17 compiler,
 and the toolkit for the selected GPU backend. It clones only the submodules
@@ -60,12 +61,11 @@ The default prefix is `%LOCALAPPDATA%\Programs\NeMoSpeech`, and the installer
 updates only the current user's PATH. A Windows source build requires Git,
 CMake, Ninja, Visual Studio 2022 Build Tools, and the selected backend toolkit.
 It includes the same CLI, HTTP API, and playground as the Linux and macOS source
-installation. Native archives will be SHA-256 verified before replacing an
-existing installation once their public URL is configured.
+installation.
 
-Source installations have distinct metadata. A later installer run checks for
-the published binary first and replaces the source build automatically once the
-matching archive is available.
+A later installer run checks for the published binary archive first and
+replaces an existing source build automatically once the matching archive is
+available.
 
 ## Manual verification
 
