@@ -20,7 +20,7 @@
     config), so use a distinct -BuildDir for each.
 
 .PARAMETER Profile
-    Component preset: core, asr, server (core + HTTP), full, or developer
+    Component preset: core, asr, server (core + NMT + HTTP), full, or developer
     (full + tests, examples, and tools). Component switches add features.
 
 .PARAMETER Grpc
@@ -63,6 +63,9 @@
     "89" (Ada/RTX 40xx), "86" (Ampere/RTX 30xx), "120" (Blackwell). Set a concrete
     value (not native) when building to ship to other GPUs.
 
+.PARAMETER CublasShim
+    Build the app-local cuBLAS replacement used by portable CUDA packages.
+
 .PARAMETER Compiler
     C/C++ compiler: auto (default), msvc, or clang-cl. auto picks cl on x64 and
     clang-cl on ARM64 (ggml's ARM CPU backend rejects MSVC). nvcc always uses
@@ -94,6 +97,7 @@ param(
     [ValidateSet('Release', 'RelWithDebInfo', 'Debug')]
     [string]$Config = 'Release',
     [string]$CudaArch = 'native',
+    [switch]$CublasShim,
     [string]$VcpkgRoot,
     [string]$VcpkgTriplet,
     [ValidateSet('auto', 'x64', 'arm64')]
@@ -133,7 +137,10 @@ $BuildTools = $false
 switch ($Profile) {
     'core'      { $BuildAsr = $true; $BuildDiar = $true; $BuildTts = $true }
     'asr'       { $BuildAsr = $true; $BuildDiar = $true }
-    'server'    { $BuildAsr = $true; $BuildDiar = $true; $BuildTts = $true; $BuildHttp = $true }
+    'server'    {
+        $BuildAsr = $true; $BuildDiar = $true; $BuildTts = $true
+        $BuildNmt = $true; $BuildHttp = $true
+    }
     'full'      {
         $BuildAsr = $true; $BuildDiar = $true; $BuildTts = $true; $BuildNmt = $true
         $BuildHttp = $true; $BuildGrpc = $true; $BuildFlashlight = $true
@@ -186,6 +193,9 @@ $CrossCompiling = ($HostArch -eq 'ARM64') -ne ($TargetArch -eq 'arm64')
 if ($Backend -eq 'cuda' -and $CrossCompiling) {
     throw 'CUDA cross-compilation is not supported by this driver; build CUDA natively on the target architecture.'
 }
+if ($CublasShim -and $Backend -ne 'cuda') {
+    throw '-CublasShim requires -Backend cuda.'
+}
 $VcpkgArch = $TargetArch
 if (-not $VcpkgTriplet) {
     # Link vcpkg libraries statically so installed binaries do not depend on the
@@ -202,7 +212,7 @@ if ($BuildExamples) { $VcpkgFeatures.Add('examples') }
 
 Write-Host "==> nemo-speech Windows build" -ForegroundColor Cyan
 Write-Host "    backend=$Backend profile=$Profile asr=$BuildAsr diar=$BuildDiar tts=$BuildTts nmt=$BuildNmt http=$BuildHttp grpc=$BuildGrpc flashlight=$BuildFlashlight tts-ja=$BuildTtsJa tts-zh=$BuildTtsZh tests=$BuildTests examples=$BuildExamples tools=$BuildTools"
-Write-Host "    config=$Config compiler=$Compiler host=$HostArch target=$TargetArch build=$BuildDir jobs=$Jobs"
+Write-Host "    config=$Config compiler=$Compiler host=$HostArch target=$TargetArch build=$BuildDir jobs=$Jobs cublas-shim=$($CublasShim.IsPresent)"
 Write-Host "    vcpkg=$($VcpkgFeatures -join ',') triplet=$VcpkgTriplet"
 if ($DryRun) { return }
 
@@ -327,7 +337,11 @@ function Initialize-RequiredSubmodule {
 }
 
 Initialize-RequiredSubmodule 'ggml' 'CMakeLists.txt'
-if ($BuildNmt) { Initialize-RequiredSubmodule 'llama.cpp' 'CMakeLists.txt' }
+if ($BuildNmt) {
+    Initialize-RequiredSubmodule 'llama.cpp' 'CMakeLists.txt'
+} elseif ($BuildAsr) {
+    Initialize-RequiredSubmodule 'llama.cpp' 'vendor\miniaudio\miniaudio.h'
+}
 if ($BuildHttp) { Initialize-RequiredSubmodule 'third_party\cpp-httplib' 'httplib.h' }
 if ($BuildGrpc) { Initialize-RequiredSubmodule 'proto\riva-common' 'LICENSE' }
 if ($BuildFlashlight) {
@@ -417,6 +431,7 @@ switch ($Backend) {
     'cuda'   {
         $cmakeArgs += '-DGGML_CUDA=ON'
         $cmakeArgs += '-DGGML_VULKAN=OFF'
+        $cmakeArgs += "-DNEMO_SPEECH_CUBLAS_SHIM=$(ConvertTo-CMakeBool $CublasShim.IsPresent)"
         $cmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
     }
     'vulkan' {

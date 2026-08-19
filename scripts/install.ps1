@@ -23,15 +23,21 @@ param(
     [switch]$DryRun
 )
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 $releaseBase = if ($env:NEMO_SPEECH_RELEASE_BASE_URL) {
     $env:NEMO_SPEECH_RELEASE_BASE_URL.TrimEnd('/')
 } else {
-    ""
+    "https://github.com/NVIDIA/NeMo-Speech.cpp/releases"
 }
 $sourceUrl = if ($env:NEMO_SPEECH_SOURCE_URL) {
     $env:NEMO_SPEECH_SOURCE_URL
 } else {
-    (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+    "https://github.com/NVIDIA/NeMo-Speech.cpp.git"
+}
+$versionUrl = if ($env:NEMO_SPEECH_VERSION_URL) {
+    $env:NEMO_SPEECH_VERSION_URL
+} else {
+    "https://raw.githubusercontent.com/NVIDIA/NeMo-Speech.cpp/main/VERSION"
 }
 if ($Source -and $BinaryOnly) { throw "-Source and -BinaryOnly are mutually exclusive" }
 $profileIncludesTts = $Profile -ne 'asr'
@@ -40,6 +46,20 @@ if ($Grpc -and -not $profileIncludesTts) {
 }
 if (($TtsJa -or $TtsZh) -and -not $profileIncludesTts) {
     throw 'The Japanese and Mandarin tokenizers require TTS. Use a profile that includes TTS.'
+}
+
+function Invoke-DownloadWithRetry {
+    param([string]$Uri, [string]$OutFile)
+
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $OutFile
+            return
+        } catch {
+            if ($attempt -eq 3) { throw }
+            Start-Sleep -Seconds $attempt
+        }
+    }
 }
 
 function Assert-SourcePrerequisites {
@@ -143,13 +163,11 @@ if ($Version -eq "latest") {
         Write-Host "No release endpoint is configured; building from the current source branch."
     } else {
         try {
-            $response = Invoke-WebRequest -Uri "$releaseBase/latest" -MaximumRedirection 10
-            $location = if ($response.BaseResponse.RequestMessage) {
-                $response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
-            } else {
-                $response.BaseResponse.ResponseUri.AbsoluteUri
+            $manifest = (Invoke-WebRequest -UseBasicParsing -Uri $versionUrl).Content
+            if ($manifest -notmatch '(?m)^NEMO_SPEECH_VERSION:\s*([^\s]+)\s*$') {
+                throw "VERSION does not contain NEMO_SPEECH_VERSION"
             }
-            $Version = ($location.TrimEnd('/') -split '/')[-1]
+            $Version = $Matches[1]
         } catch {
             if ($BinaryOnly) { throw "Could not resolve the latest release. $($_.Exception.Message)" }
             $binaryCandidate = $false
@@ -166,7 +184,9 @@ $sourceRef = if ($env:NEMO_SPEECH_SOURCE_REF) {
     $env:NEMO_SPEECH_SOURCE_REF
 } elseif ($releaseVersion -eq 'source' -and
           (Get-Command git -ErrorAction SilentlyContinue) -and
-          (Test-Path (Join-Path $sourceUrl '.git'))) {
+          ($sourceUrl -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://') -and
+          (Test-Path -LiteralPath $sourceUrl -PathType Container) -and
+          (Test-Path -LiteralPath (Join-Path $sourceUrl '.git'))) {
     $localSourceRef = (& git -C $sourceUrl symbolic-ref --quiet --short HEAD 2>$null)
     if ($LASTEXITCODE -eq 0 -and $localSourceRef) { $localSourceRef } else { 'main' }
 } elseif ($releaseVersion -in @("nightly", "source")) {
@@ -180,6 +200,9 @@ if (-not $Source -and $binaryCandidate) { Write-Host "Artifact: $url" }
 if (-not $BinaryOnly) { Write-Host "Source:   $sourceUrl#$sourceRef ($Backend/$Profile)" }
 Write-Host "Prefix:   $Prefix"
 if ($DryRun) { return }
+if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
+    Write-Warning "curl.exe was not found. Installation can continue, but automatic model downloads will be unavailable; local and already cached models still work. Windows 10 and 11 normally include curl.exe in %SystemRoot%\\System32."
+}
 
 $installIdentity = "$releaseVersion windows $arch $Backend"
 $extraComponents = [Collections.Generic.List[string]]::new()
@@ -209,8 +232,8 @@ try {
     $binaryReady = $false
     if (-not $Source -and $binaryCandidate) {
         try {
-            Invoke-WebRequest -Uri $url -OutFile $archivePath
-            Invoke-WebRequest -Uri "$url.sha256" -OutFile "$archivePath.sha256"
+            Invoke-DownloadWithRetry -Uri $url -OutFile $archivePath
+            Invoke-DownloadWithRetry -Uri "$url.sha256" -OutFile "$archivePath.sha256"
             $binaryReady = $true
         } catch {
             if ($BinaryOnly) { throw "Release artifact or checksum is unavailable. $($_.Exception.Message)" }
