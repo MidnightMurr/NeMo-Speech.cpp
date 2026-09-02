@@ -12,6 +12,7 @@
 #include "magpietts_cuda_sampling.h"
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -50,6 +51,11 @@ struct magpietts_hparams {
     int32_t mask_token_id = 2020;
     int32_t frame_stacking_factor = 1;
 
+    // Number of model prediction slots in one decoder position.  v2602 has
+    // one slot per codec codebook, while v2607 predicts two consecutive codec
+    // frames at once.
+    int32_t stacked_audio_codebooks() const { return audio_codebooks * frame_stacking_factor; }
+
     int32_t n_embd = 768;
     int32_t n_ffn = 3072;
     int32_t n_ctx = 2048;
@@ -86,6 +92,67 @@ struct magpietts_hparams {
     std::vector<int32_t> estimate_alignment_from_layers;
     std::vector<int32_t> apply_prior_to_layers;
 };
+
+inline std::string
+magpietts_infer_tokenizer_profile(const magpietts_hparams& h) {
+    if (h.text_vocab_size == 2362 && h.frame_stacking_factor == 1) {
+        return "v2602";
+    }
+    if (h.text_vocab_size == 3359 && h.frame_stacking_factor == 2) {
+        return "v2607";
+    }
+    return {};
+}
+
+inline bool
+magpietts_tokenizer_profile_matches(const std::string& profile, const magpietts_hparams& h) {
+    return profile == magpietts_infer_tokenizer_profile(h) && !profile.empty();
+}
+
+inline bool
+magpietts_unstack_codes(
+    const std::vector<int32_t>& stacked_codes, const magpietts_hparams& h,
+    std::vector<std::vector<int32_t>>& frames) {
+    if ((int)stacked_codes.size() != h.stacked_audio_codebooks()) {
+        return false;
+    }
+    frames.assign((size_t)h.frame_stacking_factor, std::vector<int32_t>(h.audio_codebooks));
+    for (int lane = 0; lane < h.frame_stacking_factor; ++lane) {
+        for (int codebook = 0; codebook < h.audio_codebooks; ++codebook) {
+            frames[(size_t)lane][(size_t)codebook] =
+                stacked_codes[(size_t)(codebook + lane * h.audio_codebooks)];
+        }
+    }
+    return true;
+}
+
+inline int
+magpietts_first_eos_lane(
+    const std::vector<int32_t>& sampled, const std::vector<int32_t>& greedy,
+    const magpietts_hparams& h) {
+    if ((int)sampled.size() != h.stacked_audio_codebooks() ||
+        (int)greedy.size() != h.stacked_audio_codebooks()) {
+        return -1;
+    }
+    for (int lane = 0; lane < h.frame_stacking_factor; ++lane) {
+        for (int codebook = 0; codebook < h.audio_codebooks; ++codebook) {
+            const size_t index = (size_t)(codebook + lane * h.audio_codebooks);
+            if (sampled[index] == h.audio_eos_id || greedy[index] == h.audio_eos_id) {
+                return lane;
+            }
+        }
+    }
+    return -1;
+}
+
+inline int
+magpietts_frames_to_emit(int frames_remaining, int frame_stacking_factor, int eos_lane) {
+    if (frames_remaining <= 0 || frame_stacking_factor <= 0) {
+        return 0;
+    }
+    const int available_frames = eos_lane >= 0 ? eos_lane : frame_stacking_factor;
+    return std::min(frames_remaining, std::max(0, available_frames));
+}
 
 struct magpietts_layer {
     ggml_tensor* norm_self = nullptr;
@@ -203,6 +270,8 @@ class MagpieModel {
     bool loaded() const { return gguf != nullptr && ctx != nullptr && backend != nullptr; }
 
     magpietts_hparams hparams;
+    std::string tokenizer_profile;
+    std::string nemo_version;
 
     gguf_context* gguf = nullptr;
     ggml_context* ctx = nullptr;
@@ -312,6 +381,7 @@ struct magpietts_run_metrics {
     int64_t first_frame_us = 0;
     int64_t last_frame_us = 0;
     int frames = 0;
+    int timing_events = 0;
     double inter_frame_sum_ms = 0.0;
     double inter_frame_min_ms = 0.0;
     double inter_frame_max_ms = 0.0;
@@ -322,7 +392,7 @@ struct magpietts_run_metrics {
     double e2e_rtfx = 0.0;
 
     void begin();
-    double record_frame(int64_t now_us, bool& first_frame);
+    double record_frame(int64_t now_us, bool& first_frame, int emitted_frames);
     void finish(size_t frames_generated, double codec_fps);
     double inter_frame_avg_ms() const;
     double inter_frame_min_value_ms() const;

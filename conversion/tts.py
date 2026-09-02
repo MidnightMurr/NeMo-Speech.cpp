@@ -24,6 +24,7 @@ import numpy as np
 import torch
 
 from .source import extract_archive, find_checkpoint_files, load_state_dict, read_checkpoint_config
+from .tts_tokenizer_profiles import tokenizer_profile
 
 SPECIAL_AUDIO_TOKENS = 8
 SPEAKER_NAMES = ["John", "Sofia", "Aria", "Jason", "Leo"]
@@ -79,24 +80,69 @@ def add_i32_array(writer: gguf.GGUFWriter, key: str, value: Any) -> None:
         writer.add_array(key, items)
 
 
+def _indexed_weight_indices(sd: dict[str, torch.Tensor], prefix: str) -> list[int]:
+    suffix = ".weight"
+    indices: list[int] = []
+    for name in sd:
+        if not name.startswith(prefix) or not name.endswith(suffix):
+            continue
+        raw_index = name[len(prefix) : -len(suffix)]
+        if not raw_index.isascii() or not raw_index.isdigit():
+            raise ValueError(f"{prefix} contains a non-numeric weight index: {name}")
+        indices.append(int(raw_index))
+    return indices
+
+
+def _require_contiguous_indices(label: str, indices: list[int], expected_count: int) -> None:
+    expected = list(range(expected_count))
+    actual = sorted(indices)
+    if actual != expected:
+        raise ValueError(
+            f"{label} indexes must be contiguous from 0 through {expected_count - 1}: "
+            f"found={actual}"
+        )
+
+
 def add_metadata(
     writer: gguf.GGUFWriter, cfg: dict[str, Any], sd: dict[str, torch.Tensor]
 ) -> dict[str, Any]:
+    encoder = cfg["encoder"]
+    decoder = cfg["decoder"]
+    lt_hidden = int(cfg.get("local_transformer_hidden_dim", 256))
+    frame_stacking = int(cfg.get("frame_stacking_factor", 1))
+    audio_embedding_indices = _indexed_weight_indices(sd, "audio_embeddings.")
+    n_stacked_codebooks = len(audio_embedding_indices)
+    if frame_stacking < 1 or n_stacked_codebooks == 0 or n_stacked_codebooks % frame_stacking:
+        raise ValueError(
+            "audio embedding count must be a positive multiple of frame_stacking_factor: "
+            f"embeddings={n_stacked_codebooks} frame_stacking_factor={frame_stacking}"
+        )
+    _require_contiguous_indices("audio embedding", audio_embedding_indices, n_stacked_codebooks)
+
     audio_vocab = int(sd["audio_embeddings.0.weight"].shape[0])
     codebook_size = audio_vocab - SPECIAL_AUDIO_TOKENS
     text_vocab = int(sd["text_embedding.weight"].shape[0])
     baked_t = int(sd["_baked_embedding_T"].item())
     baked_d = int(sd["_baked_embedding_D"].item())
     baked_lens = [int(x) for x in sd["baked_context_embedding_len"].tolist()]
-
-    encoder = cfg["encoder"]
-    decoder = cfg["decoder"]
-    lt_hidden = int(cfg.get("local_transformer_hidden_dim", 256))
-    frame_stacking = int(cfg.get("frame_stacking_factor", 1))
-    n_codebooks = int(
-        len([k for k in sd if k.startswith("audio_embeddings.") and k.endswith(".weight")])
+    profile = tokenizer_profile(cfg, text_vocab, frame_stacking)
+    n_codebooks = n_stacked_codebooks // frame_stacking
+    expected_logits = n_stacked_codebooks * audio_vocab
+    if int(sd["final_proj.weight"].shape[0]) != expected_logits:
+        raise ValueError(
+            "final_proj rows do not match stacked audio layout: "
+            f"rows={sd['final_proj.weight'].shape[0]} expected={expected_logits}"
+        )
+    lt_head_indices = _indexed_weight_indices(sd, "local_transformer_out_projections.")
+    n_lt_heads = len(lt_head_indices)
+    if n_lt_heads != n_stacked_codebooks:
+        raise ValueError(
+            "local transformer output heads do not match audio embeddings: "
+            f"heads={n_lt_heads} embeddings={n_stacked_codebooks}"
+        )
+    _require_contiguous_indices(
+        "local transformer output projection", lt_head_indices, n_stacked_codebooks
     )
-    n_codebooks //= frame_stacking
 
     inf = cfg.get("inference_parameters", {})
 
@@ -105,9 +151,11 @@ def add_metadata(
         "model_type": cfg.get("model_type"),
         "nemo_target": cfg.get("target"),
         "nemo_version": cfg.get("nemo_version"),
+        "tokenizer_profile": profile,
         "codec_model": cfg.get("codecmodel_path"),
         "text_vocab_size": text_vocab,
         "audio_codebooks": n_codebooks,
+        "stacked_audio_codebooks": n_stacked_codebooks,
         "audio_codebook_size": codebook_size,
         "audio_vocab_size": audio_vocab,
         "frame_stacking_factor": frame_stacking,
@@ -127,6 +175,7 @@ def add_metadata(
     )
     writer.add_string("magpietts.nemo_target", str(cfg.get("target", "")))
     writer.add_string("magpietts.nemo_version", str(cfg.get("nemo_version", "")))
+    writer.add_string("magpietts.tokenizer_profile", profile)
     writer.add_string("magpietts.model_type", str(cfg.get("model_type", "")))
     writer.add_string("magpietts.codec_model", str(cfg.get("codecmodel_path", "")))
     writer.add_string("magpietts.config_json", json.dumps(cfg, ensure_ascii=False, sort_keys=True))
@@ -135,6 +184,7 @@ def add_metadata(
 
     add_i32(writer, "magpietts.text_vocab_size", text_vocab)
     add_i32(writer, "magpietts.audio_codebooks", n_codebooks)
+    add_i32(writer, "magpietts.stacked_audio_codebooks", n_stacked_codebooks)
     add_i32(writer, "magpietts.audio_codebook_size", codebook_size)
     add_i32(writer, "magpietts.audio_vocab_size", audio_vocab)
     add_i32(writer, "magpietts.audio_bos_id", codebook_size + 0)
@@ -308,9 +358,9 @@ def convert(
 
         if cfg.get("target") != "nemo.collections.tts.models.magpietts.MagpieTTSModel":
             raise RuntimeError(f"unsupported target: {cfg.get('target')}")
-        if cfg.get("model_type") != "decoder_ce" or not cfg.get(
-            "has_baked_context_embedding", False
-        ):
+        # v2602 records this in the config while v2607 retains the baked
+        # tensor but omits the legacy config flag.
+        if cfg.get("model_type") != "decoder_ce" or "baked_context_embedding.weight" not in sd:
             raise RuntimeError(
                 "this GGML example expects MagpieTTS decoder_ce with baked context embeddings"
             )

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <memory>
+
 #include "model.h"
 
 namespace nemo_speech::tts {
@@ -61,6 +63,7 @@ class DecoderCrossKvCache {
 };
 
 struct decoder_result {
+    bool logits_required = true;
     std::vector<float> logits_last;
     std::vector<float> hidden_last;
     std::vector<float> cross_attn_last;
@@ -85,7 +88,11 @@ struct magpietts_cuda_sample_request {
 
 class MagpieDecoder {
    public:
-    explicit MagpieDecoder(const magpietts_model& model) : model_(model) {}
+    explicit MagpieDecoder(const magpietts_model& model);
+    ~MagpieDecoder();
+
+    MagpieDecoder(const MagpieDecoder&) = delete;
+    MagpieDecoder& operator=(const MagpieDecoder&) = delete;
 
     bool eval(
         const std::vector<float>& text_cond, int text_len,
@@ -115,7 +122,8 @@ class MagpieDecoder {
         const std::vector<float>& text_cond, int text_len,
         const std::vector<std::vector<int32_t>>& audio_codes, int speaker, int threads,
         DecoderKvCache& cond_kv, DecoderKvCache& uncond_kv, decoder_result& cond_result,
-        decoder_result& uncond_result, magpietts_cuda_sample_request* cuda_sample = nullptr,
+        decoder_result& uncond_result, int stacked_position_budget,
+        magpietts_cuda_sample_request* cuda_sample = nullptr,
         const magpietts_backend_tensor* text_cond_device = nullptr,
         magpietts_backend_tensor* cond_hidden_out = nullptr,
         magpietts_backend_tensor* uncond_hidden_out = nullptr,
@@ -123,8 +131,11 @@ class MagpieDecoder {
         const magpietts_decoder_attention* attention = nullptr) const;
 
    private:
+    class PersistentDecoderRuntime;
+
     const magpietts_model& model_;
     mutable MagpiePinnedHostScratch output_staging_;
+    mutable std::unique_ptr<PersistentDecoderRuntime> persistent_runtime_;
 };
 
 class MagpieCodebookSampler {

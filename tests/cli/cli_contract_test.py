@@ -74,7 +74,12 @@ def main() -> None:
             assert error["exit_code"] in (3, 4), error
 
         serve_help = run(binary, "serve", "--help")
+        has_tts_options = "--tts-model" in serve_help.stdout
         if "--cors-origin" in serve_help.stdout:
+            if has_tts_options:
+                assert "--tts.preempt" in serve_help.stdout
+            else:
+                assert "--tts.preempt" not in serve_help.stdout
             with socket.socket() as stalled_server:
                 stalled_server.bind(("127.0.0.1", 0))
                 stalled_server.listen()
@@ -142,7 +147,14 @@ def main() -> None:
                     missing_paths.append(str(path))
             if len(missing_paths) >= 2:
                 error = expect_json_error(
-                    run(binary, "--json", "serve", *missing_arguments, "--no-warmup"),
+                    run(
+                        binary,
+                        "--json",
+                        "serve",
+                        *(["--tts.preempt"] if has_tts_options else []),
+                        *missing_arguments,
+                        "--no-warmup",
+                    ),
                     3,
                     "missing_model",
                 )

@@ -228,6 +228,9 @@ run_server(int argc, char** argv) {
         "tts.enabled",
         [&](const std::string& value) { tts_enabled = parse_enablement("tts.enabled", value); },
         "Enable TTS: auto, true, or false");
+    parser.Register(
+        "tts.preempt", &server_config.preempt_tts,
+        "Cancel older HTTP TTS synthesis when a newer request arrives");
 #endif
     auto value = [&](int& index, const std::string& option) {
         if (++index >= argc)
@@ -503,8 +506,6 @@ run_server(int argc, char** argv) {
                 tts_config.runtime.codec_cpu = gpu < 0;
             } else {
                 tts_config.runtime.lt_backend = nemo_speech::tts::MagpieBackendPreference::Cuda;
-                tts_config.runtime.sampling_backend =
-                    nemo_speech::tts::MagpieBackendPreference::Cuda;
             }
         }
         tts_config.runtime.magpie_model = magpie_path;
@@ -518,6 +519,9 @@ run_server(int argc, char** argv) {
         config.default_voice_name = tts_config.default_voice_name;
         engines.load_tts(std::move(config));
     }
+    // The HTTP server owns request handling, so carry the existing TTS
+    // benchmark switch across from the TTS server configuration.
+    server_config.tts_benchmark = tts_config.benchmark;
 #endif
     if (!engines.ready())
         throw std::runtime_error(
@@ -642,6 +646,7 @@ print_serve_help(const char* program) {
         "  --codec-model MODEL     NanoCodec path or indexed model\n"
         "  --tokenizer-dir MODEL   TTS tokenizer directory or indexed model\n"
         "  --tn-model-dir MODEL    Optional TTS text-normalization assets\n"
+        "  --tts.preempt           Cancel older HTTP TTS synthesis for the newest request\n"
 #endif
 #if defined(NEMO_SPEECH_CLI_NMT)
         "  --nmt-model MODEL       Optional translation model\n"

@@ -17,6 +17,12 @@ BackendManager::BackendManager(Params params) {
     init_backends();
 }
 
+BackendManager::BackendManager(Params params, ggml_backend_t borrowed_gpu_backend) {
+    this->params = params;
+    borrowed_gpu_backend_ = borrowed_gpu_backend;
+    init_backends();
+}
+
 
 void
 BackendManager::init_backends() {
@@ -43,7 +49,20 @@ BackendManager::init_backends() {
     GGMLF_LOG_INFO("Found %zu devices.\n", dev_count);
 
     ggml_backend_dev_t dev = nullptr;
-    if (params.use_gpu) {
+    if (borrowed_gpu_backend_ != nullptr) {
+        dev = ggml_backend_get_device(borrowed_gpu_backend_);
+        const auto dev_type = dev ? ggml_backend_dev_type(dev) : GGML_BACKEND_DEVICE_TYPE_CPU;
+        if (dev == nullptr || (dev_type != GGML_BACKEND_DEVICE_TYPE_GPU &&
+                               dev_type != GGML_BACKEND_DEVICE_TYPE_IGPU)) {
+            throw std::runtime_error("borrowed GPU backend is not a GPU device");
+        }
+        auto* buft = ggml_backend_dev_buffer_type(dev);
+        if (buft) {
+            buft_list.emplace_back(dev, buft);
+        }
+        gpu_backend = borrowed_gpu_backend_;
+        GGMLF_LOG_INFO("Using borrowed GPU backend: %s\n", ggml_backend_name(gpu_backend));
+    } else if (params.use_gpu) {
         int idx = 0;
         for (int i = 0; i < dev_count; i++) {
             ggml_backend_dev_t dev_cur = ggml_backend_dev_get(i);
@@ -124,7 +143,9 @@ BackendManager::init_backends() {
 std::vector<ggml_backend_t>
 BackendManager::get_backends() {
     std::vector<ggml_backend_t> handles;
-    handles.reserve(backends.size());
+    handles.reserve(backends.size() + (borrowed_gpu_backend_ ? 1 : 0));
+    if (borrowed_gpu_backend_)
+        handles.push_back(borrowed_gpu_backend_);
     for (const auto& b : backends) handles.push_back(b.get());
     return handles;
 }

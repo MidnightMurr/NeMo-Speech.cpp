@@ -20,6 +20,13 @@ add_executable(test_subtitles
 target_link_libraries(test_subtitles PRIVATE nemo_speech_common)
 add_test(NAME subtitles COMMAND test_subtitles)
 
+if(TARGET nemo_speech_http_server)
+    add_executable(test_http_server_config
+        ${CMAKE_SOURCE_DIR}/tests/cpp/common/test_http_server_config.cpp)
+    target_link_libraries(test_http_server_config PRIVATE nemo_speech_http_server)
+    add_test(NAME http_server_config COMMAND test_http_server_config)
+endif()
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND AND
    (NEMO_SPEECH_BUILD_ASR OR NEMO_SPEECH_BUILD_DIAR OR
@@ -72,6 +79,19 @@ if(TARGET nemo_speech_cli)
                 --binary $<TARGET_FILE:nemo_speech_cli>
                 --asr-model $ENV{NEMO_SPEECH_TEST_ASR_MODEL}
                 --audio $ENV{NEMO_SPEECH_TEST_AUDIO})
+            set(nemo_speech_http_tts_conformance OFF)
+            if(NEMO_SPEECH_BUILD_TTS AND DEFINED ENV{NEMO_SPEECH_TEST_TTS_MODEL} AND
+               DEFINED ENV{NEMO_SPEECH_TEST_CODEC_MODEL} AND
+               DEFINED ENV{NEMO_SPEECH_TEST_TOKENIZER_DIR} AND
+               NOT "$ENV{NEMO_SPEECH_TEST_TTS_MODEL}" STREQUAL "" AND
+               NOT "$ENV{NEMO_SPEECH_TEST_CODEC_MODEL}" STREQUAL "" AND
+               NOT "$ENV{NEMO_SPEECH_TEST_TOKENIZER_DIR}" STREQUAL "")
+                set(nemo_speech_http_tts_conformance ON)
+                list(APPEND http_conformance_args
+                    --tts-model $ENV{NEMO_SPEECH_TEST_TTS_MODEL}
+                    --codec-model $ENV{NEMO_SPEECH_TEST_CODEC_MODEL}
+                    --tokenizer-dir $ENV{NEMO_SPEECH_TEST_TOKENIZER_DIR})
+            endif()
             find_program(NEMO_SPEECH_NODE_EXECUTABLE NAMES node nodejs)
             if(NEMO_SPEECH_NODE_EXECUTABLE AND
                DEFINED ENV{NEMO_SPEECH_TEST_OPENAI_JS_PACKAGE})
@@ -87,6 +107,14 @@ if(TARGET nemo_speech_cli)
                         ${CMAKE_SOURCE_DIR}/tests/integration/http_conformance_test.py
                         ${http_conformance_args})
             set_tests_properties(http_openai_conformance PROPERTIES TIMEOUT 600)
+            if(nemo_speech_http_tts_conformance)
+                add_test(
+                    NAME http_tts_preemption
+                    COMMAND ${Python3_EXECUTABLE}
+                            ${CMAKE_SOURCE_DIR}/tests/integration/http_conformance_test.py
+                            ${http_conformance_args} --tts-preempt)
+                set_tests_properties(http_tts_preemption PROPERTIES TIMEOUT 600)
+            endif()
         endif()
     endif()
 endif()

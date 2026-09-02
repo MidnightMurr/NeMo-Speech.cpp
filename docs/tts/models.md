@@ -16,12 +16,55 @@ options are omitted.
 
 Hugging Face: [nvidia/magpie_tts_multilingual_357m](https://huggingface.co/nvidia/magpie_tts_multilingual_357m)
 
+```bash
+# Download the v2602 GGUF and its matching tokenizer archive from their
+# immutable revisions.
+hf download nvidia/magpie_tts_multilingual_357m \
+    --include magpie_tts_multilingual_357m.v2602.f16.gguf \
+    --revision 452ef560f972c38d5fc16476259aac9456453547 \
+    --local-dir models/magpie-tts
+hf download nvidia/magpie_tts_multilingual_357m \
+    --include magpie_tts_multilingual_357m.nemo \
+    --revision 34d7e40da85cabc97f92198889b65cea27bc7fd1 \
+    --local-dir models/magpie-tts
+
+# Extract the tokenizer assets loaded by the runtime.
+mkdir -p models/magpie-tts/extracted
+tar -xf models/magpie-tts/magpie_tts_multilingual_357m.nemo \
+    -C models/magpie-tts/extracted
+```
+
+MagpieTTS v2607 uses factor-2 frame stacking and must currently be converted
+locally before use:
+
+```bash
+hf download nvidia/magpie_tts_multilingual_357m \
+    magpie_tts_multilingual_357m.nemo \
+    --revision v2607 --local-dir models/magpie-tts-v2607
+python3 convert_model.py models/magpie-tts-v2607/magpie_tts_multilingual_357m.nemo \
+    --outfile models/magpie-tts-v2607/magpie_tts_multilingual_357m.v2607.f16.gguf
+mkdir -p models/magpie-tts-v2607/extracted
+tar -xf models/magpie-tts-v2607/magpie_tts_multilingual_357m.nemo \
+    -C models/magpie-tts-v2607/extracted
+```
+
+Both v2602 (factor 1) and v2607 (factor 2) use the same NanoCodec decoder.
+
 **Tokenizer.** MagpieTTS's tokenizer assets live *inside* the `.nemo` archive -
 they are not part of the GGUF. The built-in pull extracts only the required,
 pinned tokenizer members and verifies each one. For a custom Magpie checkpoint,
 extract its `.nemo` archive and pass that directory as `--tokenizer-dir` or
 `--tts.tokenizer-model-dir`.
 The model-specific IPA/text tokenizer assets are loaded from this directory.
+The GGUF and extracted directory must come from the same model revision. The
+runtime recognizes the exact v2602 and v2607 tokenizer layouts from
+`model_config.yaml` and rejects unknown layouts or a profile mismatch at
+startup. Newly converted GGUFs record the profile explicitly; older v2602 and
+v2607 GGUFs are identified from their text-vocabulary and frame-stacking
+dimensions. In particular, v2602 uses the Hindi character tokenizer, while
+v2607 uses the bundled Hindi IPA dictionary and also changes tokenizer order,
+Japanese ASCII casing, Italian/Vietnamese tokenizer names, and the supported
+language set.
 Japanese tokenization requires a build with `NEMO_SPEECH_TTS_WITH_JA=ON`
 (disabled by default), which builds Open JTalk, MeCab, and the NAIST dictionary.
 Mandarin requires `NEMO_SPEECH_TTS_WITH_ZH=ON` (disabled by default) and

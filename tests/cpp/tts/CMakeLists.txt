@@ -8,6 +8,16 @@ target_link_libraries(test_magpietts_file PRIVATE nemo_speech_tts_magpietts)
 add_executable(test_magpietts_attention_prior test_magpietts_attention_prior.cpp)
 target_link_libraries(test_magpietts_attention_prior PRIVATE nemo_speech_tts_magpietts)
 
+add_executable(test_magpietts_frame_stacking test_magpietts_frame_stacking.cpp)
+target_link_libraries(test_magpietts_frame_stacking PRIVATE nemo_speech_tts_magpietts)
+add_test(NAME magpietts_frame_stacking COMMAND test_magpietts_frame_stacking)
+
+if(GGML_CUDA AND NEMO_SPEECH_GGML_PATCHED)
+    add_executable(test_magpietts_cached_attention test_magpietts_cached_attention.cpp)
+    target_link_libraries(test_magpietts_cached_attention PRIVATE nemo_speech_tts_magpietts)
+    add_test(NAME magpietts_cached_attention COMMAND test_magpietts_cached_attention)
+endif()
+
 add_executable(test_magpietts_asr test_magpietts_asr.cpp)
 target_link_libraries(test_magpietts_asr PRIVATE
     tests_cpp_wer
@@ -38,6 +48,16 @@ endif()
 if(NEMO_SPEECH_TTS_WITH_ZH)
     target_compile_definitions(test_tokenizer_single_chars PRIVATE NEMO_SPEECH_TTS_WITH_ZH=1)
 endif()
+if(DEFINED ENV{NEMO_SPEECH_TEST_TOKENIZER_DIR_V2602})
+    add_test(
+        NAME tokenizer_v2602
+        COMMAND test_tokenizer_single_chars $ENV{NEMO_SPEECH_TEST_TOKENIZER_DIR_V2602})
+endif()
+if(DEFINED ENV{NEMO_SPEECH_TEST_TOKENIZER_DIR_V2607})
+    add_test(
+        NAME tokenizer_v2607
+        COMMAND test_tokenizer_single_chars $ENV{NEMO_SPEECH_TEST_TOKENIZER_DIR_V2607})
+endif()
 
 if(NEMO_SPEECH_TTS_WITH_ZH)
     add_executable(test_tokenizer_mandarin test_tokenizer_mandarin.cpp)
@@ -45,6 +65,16 @@ if(NEMO_SPEECH_TTS_WITH_ZH)
         test_tokenizer_mandarin PRIVATE nemo_speech_tts_tokenizer Threads::Threads)
     target_compile_definitions(test_tokenizer_mandarin PRIVATE
         MANDARIN_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    if(DEFINED ENV{NEMO_SPEECH_TEST_TOKENIZER_DIR_V2602})
+        add_test(
+            NAME tokenizer_mandarin_v2602
+            COMMAND test_tokenizer_mandarin $ENV{NEMO_SPEECH_TEST_TOKENIZER_DIR_V2602})
+    endif()
+    if(DEFINED ENV{NEMO_SPEECH_TEST_TOKENIZER_DIR_V2607})
+        add_test(
+            NAME tokenizer_mandarin_v2607
+            COMMAND test_tokenizer_mandarin $ENV{NEMO_SPEECH_TEST_TOKENIZER_DIR_V2607})
+    endif()
 endif()
 
 add_executable(test_tts_terminal_punctuation test_tts_terminal_punctuation.cpp)

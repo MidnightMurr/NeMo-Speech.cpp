@@ -13,22 +13,31 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 import urllib.parse
 
 PAYLOAD = b"NeMo-Speech.cpp model-store fixture\n"
 CODEC_PAYLOAD = b"NeMo-Speech.cpp codec fixture\n"
 TTS_PAYLOAD = b"NeMo-Speech.cpp TTS fixture\n"
 TOKENIZER_PAYLOAD = b"tokenizer configuration\n"
+TTS_REVISION = "1" * 40
+TOKENIZER_REVISION = "3" * 40
+CODEC_REVISION = "2" * 40
+ASR_ARTIFACT_REVISION = "4" * 40
+STALE_ASR_ARTIFACT_REVISION = "5" * 40
 
 
 class ArtifactHandler(http.server.BaseHTTPRequestHandler):
     requests = 0
     request_counts: dict[str, int] = {}
+    request_paths: list[str] = []
     payloads: dict[str, bytes] = {}
 
     def do_GET(self) -> None:
         type(self).requests += 1
-        filename = pathlib.PurePosixPath(urllib.parse.urlsplit(self.path).path).name
+        request_path = urllib.parse.urlsplit(self.path).path
+        type(self).request_paths.append(request_path)
+        filename = pathlib.PurePosixPath(request_path).name
         type(self).request_counts[filename] = type(self).request_counts.get(filename, 0) + 1
         payload = type(self).payloads.get(filename)
         if payload is None:
@@ -89,7 +98,12 @@ def file_artifact(role: str, filename: str, payload: bytes, sha256: str | None =
     }
 
 
-def write_index(path: pathlib.Path, asr_sha256: str, tokenizer_tar: bytes) -> None:
+def write_index(
+    path: pathlib.Path,
+    asr_sha256: str,
+    tokenizer_tar: bytes,
+    asr_payload: bytes = PAYLOAD,
+) -> None:
     path.write_text(
         json.dumps(
             {
@@ -107,12 +121,12 @@ def write_index(path: pathlib.Path, asr_sha256: str, tokenizer_tar: bytes) -> No
                         "revision": "0" * 40,
                         "license": "Test only",
                         "license_url": "https://example.invalid/license",
-                        "artifacts": [file_artifact("asr", "tiny.gguf", PAYLOAD, asr_sha256)],
+                        "artifacts": [file_artifact("asr", "tiny.gguf", asr_payload, asr_sha256)],
                     },
                     {
                         "repo": "acme/tiny-tts",
                         "aliases": ["tiny-tts"],
-                        "revision": "1" * 40,
+                        "revision": TTS_REVISION,
                         "license": "Test only",
                         "license_url": "https://example.invalid/license",
                         "companions": ["acme/tiny-codec"],
@@ -122,6 +136,7 @@ def write_index(path: pathlib.Path, asr_sha256: str, tokenizer_tar: bytes) -> No
                                 "role": "tokenizer",
                                 "type": "tar-prefix",
                                 "filename": "tiny-tts.nemo",
+                                "revision": TOKENIZER_REVISION,
                                 "directory": "tokenizer",
                                 "size": len(tokenizer_tar),
                                 "range_end": len(tokenizer_tar) - 1,
@@ -140,7 +155,7 @@ def write_index(path: pathlib.Path, asr_sha256: str, tokenizer_tar: bytes) -> No
                     {
                         "repo": "acme/tiny-codec",
                         "aliases": ["tiny-codec"],
-                        "revision": "2" * 40,
+                        "revision": CODEC_REVISION,
                         "license": "Test only",
                         "license_url": "https://example.invalid/license",
                         "artifacts": [file_artifact("codec", "tiny-codec.gguf", CODEC_PAYLOAD)],
@@ -170,6 +185,7 @@ def main() -> None:
         write_index(index, hashlib.sha256(PAYLOAD).hexdigest(), tokenizer_tar)
         ArtifactHandler.requests = 0
         ArtifactHandler.request_counts = {}
+        ArtifactHandler.request_paths = []
         ArtifactHandler.payloads = {
             "tiny.gguf": PAYLOAD,
             "tiny-tts.gguf": TTS_PAYLOAD,
@@ -246,12 +262,34 @@ def main() -> None:
             assert ArtifactHandler.request_counts["tiny-tts.gguf"] == 1
             assert ArtifactHandler.request_counts["tiny-tts.nemo"] == 1
             assert ArtifactHandler.request_counts["tiny-codec.gguf"] == 1
+            assert (
+                f"/acme/tiny-tts/resolve/{TTS_REVISION}/tiny-tts.gguf"
+                in ArtifactHandler.request_paths
+            )
+            assert (
+                f"/acme/tiny-tts/resolve/{TOKENIZER_REVISION}/tiny-tts.nemo"
+                in ArtifactHandler.request_paths
+            )
+            assert (
+                f"/acme/tiny-codec/resolve/{CODEC_REVISION}/tiny-codec.gguf"
+                in ArtifactHandler.request_paths
+            )
 
             cached_tts = run(binary, environment, "--json", "model", "pull", "acme/tiny-tts")
             assert cached_tts.returncode == 0, cached_tts.stderr
             assert all(item["cached"] for item in json.loads(cached_tts.stdout)["artifacts"])
             assert ArtifactHandler.request_counts["tiny-tts.gguf"] == 1
             assert ArtifactHandler.request_counts["tiny-tts.nemo"] == 1
+            assert ArtifactHandler.request_counts["tiny-codec.gguf"] == 1
+
+            (tokenizer / "tokenizer.txt").write_bytes(b"x" * len(TOKENIZER_PAYLOAD))
+            refreshed_tts = run(binary, environment, "--json", "pull", "tiny-tts")
+            assert refreshed_tts.returncode == 0, refreshed_tts.stderr
+            refreshed_artifacts = json.loads(refreshed_tts.stdout)["artifacts"]
+            assert [item["cached"] for item in refreshed_artifacts] == [True, False, True]
+            assert (tokenizer / "tokenizer.txt").read_bytes() == TOKENIZER_PAYLOAD
+            assert ArtifactHandler.request_counts["tiny-tts.gguf"] == 1
+            assert ArtifactHandler.request_counts["tiny-tts.nemo"] == 2
             assert ArtifactHandler.request_counts["tiny-codec.gguf"] == 1
 
             previous_mtime = destination.stat().st_mtime_ns
@@ -262,6 +300,76 @@ def main() -> None:
             assert json.loads(repaired.stdout)["artifacts"][0]["cached"] is False
             assert destination.read_bytes() == PAYLOAD
             assert marker.read_text(encoding="utf-8").splitlines() != marker_lines
+
+            revision_index = json.loads(index.read_text(encoding="utf-8"))
+            assert revision_index["models"][0]["revision"] == "0" * 40
+            revision_index["models"][0]["artifacts"][0]["revision"] = ASR_ARTIFACT_REVISION
+            index.write_text(json.dumps(revision_index), encoding="utf-8")
+            revision_cache = root / "revision-cache"
+            revision_partial = (
+                revision_cache / "acme" / "tiny-asr" / ("0" * 40) / "tiny.gguf.partial"
+            )
+            revision_partial.parent.mkdir(parents=True)
+            revision_partial.write_bytes(b"x" * 5)
+            pathlib.Path(f"{revision_partial}.revision").write_text(
+                f"{STALE_ASR_ARTIFACT_REVISION}\n", encoding="utf-8"
+            )
+            revision_environment = {
+                **environment,
+                "NEMO_SPEECH_MODEL_DIR": str(revision_cache),
+            }
+            revision_pull = run(binary, revision_environment, "--json", "pull", "tiny-asr")
+            assert revision_pull.returncode == 0, revision_pull.stderr
+            revision_artifact = json.loads(revision_pull.stdout)["artifacts"][0]
+            assert pathlib.Path(revision_artifact["path"]).read_bytes() == PAYLOAD
+            assert (
+                f"/acme/tiny-asr/resolve/{ASR_ARTIFACT_REVISION}/tiny.gguf"
+                in ArtifactHandler.request_paths
+            )
+            assert not revision_partial.exists()
+            assert not pathlib.Path(f"{revision_partial}.revision").exists()
+            write_index(index, hashlib.sha256(PAYLOAD).hexdigest(), tokenizer_tar)
+
+            unstable_payload = b"x" * (16 * 1024 * 1024)
+            write_index(
+                index,
+                hashlib.sha256(unstable_payload).hexdigest(),
+                tokenizer_tar,
+                unstable_payload,
+            )
+            unstable_cache = root / "unstable-cache"
+            unstable_partial = (
+                unstable_cache / "acme" / "tiny-asr" / ("0" * 40) / "tiny.gguf.partial"
+            )
+            unstable_partial.parent.mkdir(parents=True)
+            unstable_partial.write_bytes(unstable_payload)
+            pathlib.Path(f"{unstable_partial}.revision").write_text(
+                f"{'0' * 40}\n", encoding="utf-8"
+            )
+            unstable_environment = {
+                **environment,
+                "NEMO_SPEECH_MODEL_DIR": str(unstable_cache),
+            }
+            requests_before_unstable_pull = ArtifactHandler.requests
+
+            def change_partial_mtime() -> None:
+                deadline = time.monotonic() + 0.2
+                while time.monotonic() < deadline:
+                    try:
+                        os.utime(unstable_partial, None)
+                    except FileNotFoundError:
+                        return
+                    time.sleep(0.001)
+
+            mtime_thread = threading.Thread(target=change_partial_mtime)
+            mtime_thread.start()
+            unstable_pull = run(binary, unstable_environment, "--json", "pull", "tiny-asr")
+            mtime_thread.join(timeout=5)
+            assert unstable_pull.returncode == 0, unstable_pull.stderr
+            unstable_artifact = json.loads(unstable_pull.stdout)["artifacts"][0]
+            assert pathlib.Path(unstable_artifact["path"]).read_bytes() == unstable_payload
+            assert ArtifactHandler.requests == requests_before_unstable_pull
+            write_index(index, hashlib.sha256(PAYLOAD).hexdigest(), tokenizer_tar)
 
             unknown = expect_json_error(
                 run(binary, environment, "--json", "pull", "unknown/repository"), 3
@@ -275,7 +383,47 @@ def main() -> None:
                 run(binary, bad_environment, "--json", "pull", "tiny-asr"), 1
             )
             assert "SHA-256 verification" in invalid["message"]
+            assert f"revision {'0' * 40}" in invalid["message"]
+            assert f"expected size {len(PAYLOAD)}" in invalid["message"]
+            assert f"actual size {len(PAYLOAD)}" in invalid["message"]
+            assert f"expected SHA-256 {'0' * 64}" in invalid["message"]
+            assert f"actual SHA-256 {hashlib.sha256(PAYLOAD).hexdigest()}" in invalid["message"]
             assert not list(bad_cache.rglob("tiny.gguf"))
+            assert not list(bad_cache.rglob("tiny.gguf.partial"))
+            assert not list(bad_cache.rglob("tiny.gguf.partial.revision"))
+
+            write_index(index, hashlib.sha256(PAYLOAD).hexdigest(), tokenizer_tar)
+            oversized_payload = PAYLOAD + b"x"
+            ArtifactHandler.payloads["tiny.gguf"] = oversized_payload
+            oversized_cache = root / "oversized-cache"
+            oversized_environment = {
+                **environment,
+                "NEMO_SPEECH_MODEL_DIR": str(oversized_cache),
+            }
+            oversized = expect_json_error(
+                run(binary, oversized_environment, "--json", "pull", "tiny-asr"), 1
+            )
+            assert f"expected size {len(PAYLOAD)}" in oversized["message"]
+            assert f"actual size {len(oversized_payload)}" in oversized["message"]
+            assert f"expected SHA-256 {hashlib.sha256(PAYLOAD).hexdigest()}" in oversized["message"]
+            assert (
+                f"actual SHA-256 {hashlib.sha256(oversized_payload).hexdigest()}"
+                in oversized["message"]
+            )
+            assert not list(oversized_cache.rglob("tiny.gguf"))
+            assert not list(oversized_cache.rglob("tiny.gguf.partial"))
+            assert not list(oversized_cache.rglob("tiny.gguf.partial.revision"))
+            ArtifactHandler.payloads["tiny.gguf"] = PAYLOAD
+
+            invalid_revision_index = json.loads(index.read_text(encoding="utf-8"))
+            invalid_revision_index["models"][1]["artifacts"][1]["revision"] = "invalid"
+            index.write_text(json.dumps(invalid_revision_index), encoding="utf-8")
+            invalid_revision = expect_json_error(
+                run(binary, environment, "--json", "pull", "tiny-tts"), 1
+            )
+            assert "revision must be a full commit SHA" in invalid_revision["message"]
+            assert "acme/tiny-tts/tokenizer" in invalid_revision["message"]
+            write_index(index, hashlib.sha256(PAYLOAD).hexdigest(), tokenizer_tar)
 
             missing_environment = {
                 **environment,

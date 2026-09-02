@@ -57,6 +57,7 @@ struct Artifact {
     std::string role;
     std::string type;
     std::string filename;
+    std::string revision;
     std::string directory;
     std::string sha256;
     uint64_t size = 0;
@@ -280,6 +281,13 @@ validate_repo(const std::string& repo) {
     validate_component(repo.substr(slash + 1), "repository name");
 }
 
+void
+validate_revision(const std::string& revision, const std::string& description) {
+    if (revision.size() != 40 ||
+        revision.find_first_not_of("0123456789abcdef") != std::string::npos)
+        throw std::runtime_error("model index revision must be a full commit SHA: " + description);
+}
+
 bool
 looks_like_repo(const std::string& reference) {
     try {
@@ -314,10 +322,7 @@ load_index() {
                 model.aliases.push_back(alias.string());
             }
         }
-        if (model.revision.size() != 40 ||
-            model.revision.find_first_not_of("0123456789abcdef") != std::string::npos)
-            throw std::runtime_error(
-                "model index revision must be a full commit SHA: " + model.repo);
+        validate_revision(model.revision, model.repo);
         if (const Value* companions = model_value.find("companions")) {
             for (const auto& companion : companions->array()) {
                 validate_repo(companion.string());
@@ -330,6 +335,7 @@ load_index() {
             artifact.role = artifact_value.at("role").string();
             artifact.type = artifact_value.at("type").string();
             artifact.filename = artifact_value.at("filename").string();
+            artifact.revision = artifact_value.string_or("revision");
             artifact.directory = artifact_value.string_or("directory");
             artifact.sha256 = artifact_value.at("sha256").string();
             artifact.size = integer(artifact_value, "size");
@@ -340,6 +346,8 @@ load_index() {
                 "asr", "diarization", "tts", "codec", "tokenizer"};
             if (allowed_roles.find(artifact.role) == allowed_roles.end())
                 throw std::runtime_error("unsupported artifact role in model index");
+            if (!artifact.revision.empty())
+                validate_revision(artifact.revision, model.repo + "/" + artifact.role);
             if (!artifact_roles.insert(artifact.role).second)
                 throw std::runtime_error(
                     "duplicate artifact role in model index: " + model.repo + "/" + artifact.role);
@@ -591,9 +599,14 @@ base_url() {
 }
 
 std::string
+artifact_revision(const Model& model, const Artifact& artifact) {
+    return artifact.revision.empty() ? model.revision : artifact.revision;
+}
+
+std::string
 download_url(const Model& model, const Artifact& artifact) {
-    return base_url() + "/" + model.repo + "/resolve/" + model.revision + "/" + artifact.filename +
-           "?download=true";
+    return base_url() + "/" + model.repo + "/resolve/" + artifact_revision(model, artifact) + "/" +
+           artifact.filename + "?download=true";
 }
 
 int
@@ -776,6 +789,63 @@ verification_marker_path(const fs::path& path) {
     return marker;
 }
 
+fs::path
+partial_revision_path(const fs::path& path) {
+    fs::path marker = path;
+    marker += ".revision";
+    return marker;
+}
+
+bool
+partial_revision_matches(const fs::path& path, const std::string& revision) {
+    const fs::path marker = partial_revision_path(path);
+    std::error_code error;
+    if (!fs::is_regular_file(marker, error) || error || fs::file_size(marker, error) > 64 || error)
+        return false;
+    std::ifstream input(marker, std::ios::binary);
+    std::string stored_revision;
+    if (!std::getline(input, stored_revision))
+        return false;
+    std::string extra;
+    return !std::getline(input, extra) && stored_revision == revision;
+}
+
+void
+write_partial_revision(const fs::path& path, const std::string& revision) {
+    const fs::path marker = partial_revision_path(path);
+    fs::path temporary = marker;
+    temporary += ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        output << revision << '\n';
+        if (!output) {
+            std::error_code error;
+            fs::remove(temporary, error);
+            throw std::runtime_error("cannot write partial-download revision marker");
+        }
+    }
+    std::error_code error;
+    fs::remove(marker, error);
+    error.clear();
+    fs::rename(temporary, marker, error);
+    if (error) {
+        fs::remove(temporary, error);
+        throw std::runtime_error("cannot install partial-download revision marker");
+    }
+}
+
+void
+discard_partial_download(const fs::path& path) {
+    std::error_code error;
+    fs::remove(path, error);
+    if (error)
+        throw std::runtime_error("cannot discard stale partial download: " + error.message());
+    fs::remove(partial_revision_path(path), error);
+    if (error)
+        throw std::runtime_error(
+            "cannot discard stale partial-download revision marker: " + error.message());
+}
+
 std::string
 file_time_string(fs::file_time_type value) {
     const auto nanoseconds =
@@ -829,20 +899,31 @@ write_verification_marker(const fs::path& path, const Artifact& artifact, const 
 
 bool
 valid_file(const fs::path& path, const Artifact& artifact, bool cache_hit = false) {
-    FileState before{};
-    if (!file_state(path, artifact.size, before))
-        return false;
-    if (cache_hit && verification_marker_matches(path, artifact, before))
-        return true;
-    if (sha256_file(path) != artifact.sha256)
-        return false;
-    FileState after{};
-    if (!file_state(path, artifact.size, after) || before.size != after.size ||
-        before.modified != after.modified)
-        return false;
-    if (cache_hit)
-        write_verification_marker(path, artifact, after);
-    return true;
+    constexpr int max_attempts = 4;
+    // Shared caches can expose a finishing writer or delayed filesystem metadata here.
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        FileState before{};
+        if (!file_state(path, artifact.size, before))
+            return false;
+        if (cache_hit && verification_marker_matches(path, artifact, before))
+            return true;
+
+        const std::string actual_sha256 = sha256_file(path);
+        FileState after{};
+        const bool stable = file_state(path, artifact.size, after) && before.size == after.size &&
+                            before.modified == after.modified;
+        if (stable) {
+            if (actual_sha256 != artifact.sha256)
+                return false;
+            if (cache_hit)
+                write_verification_marker(path, artifact, after);
+            return true;
+        }
+
+        if (attempt + 1 < max_attempts)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return false;
 }
 
 bool
@@ -981,6 +1062,7 @@ extract_tar_prefix(const fs::path& archive, const fs::path& destination, const A
 PulledModelArtifact
 materialize(const Model& model, const Artifact& artifact) {
     const fs::path directory = model_directory(model);
+    const std::string revision = artifact_revision(model, artifact);
     fs::create_directories(directory);
     const fs::path destination =
         artifact.type == "file" ? directory / artifact.filename : directory / artifact.directory;
@@ -1008,30 +1090,53 @@ materialize(const Model& model, const Artifact& artifact) {
             stderr,
             "[model] downloading %s@%.12s (%s, %.1f MiB)\n"
             "[model] license: %s — %s\n",
-            model.repo.c_str(), model.revision.c_str(), artifact.role.c_str(),
-            artifact.size / 1048576.0, model.license.c_str(), model.license_url.c_str());
+            model.repo.c_str(), revision.c_str(), artifact.role.c_str(), artifact.size / 1048576.0,
+            model.license.c_str(), model.license_url.c_str());
     }
     const fs::path partial = directory / (artifact.filename + ".partial");
+    std::error_code partial_error;
+    if (fs::exists(partial, partial_error) && !partial_error) {
+        if (!partial_revision_matches(partial, revision))
+            discard_partial_download(partial);
+    } else {
+        fs::remove(partial_revision_path(partial), partial_error);
+    }
     if (!valid_file(partial, artifact)) {
         if (artifact.type == "tar-prefix") {
-            std::error_code error;
-            fs::remove(partial, error);
+            discard_partial_download(partial);
         } else {
             std::error_code error;
             if (fs::is_regular_file(partial, error) &&
                 fs::file_size(partial, error) > artifact.size)
-                fs::remove(partial, error);
+                discard_partial_download(partial);
         }
+        write_partial_revision(partial, revision);
         download(model, artifact, partial);
     }
     if (!cli_quiet() && !cli_json())
         std::fprintf(stderr, "[model] verifying size and SHA-256...\n");
     if (!valid_file(partial, artifact)) {
+        std::string actual_size = "unavailable";
+        std::string actual_sha256 = "unavailable";
+        std::error_code diagnostic_error;
+        if (fs::is_regular_file(partial, diagnostic_error) && !diagnostic_error) {
+            const uintmax_t size = fs::file_size(partial, diagnostic_error);
+            if (!diagnostic_error)
+                actual_size = std::to_string(size);
+            try {
+                actual_sha256 = sha256_file(partial);
+            }
+            catch (const std::exception&) {
+            }
+        }
         std::error_code error;
         fs::remove(partial, error);
+        fs::remove(partial_revision_path(partial), error);
         throw std::runtime_error(
             "downloaded artifact failed size or SHA-256 verification: " + model.repo + "/" +
-            artifact.filename);
+            artifact.filename + " (revision " + artifact_revision(model, artifact) +
+            ", expected size " + std::to_string(artifact.size) + ", actual size " + actual_size +
+            ", expected SHA-256 " + artifact.sha256 + ", actual SHA-256 " + actual_sha256 + ")");
     }
 
     std::error_code error;
@@ -1041,6 +1146,7 @@ materialize(const Model& model, const Artifact& artifact) {
         fs::rename(partial, destination, error);
         if (error)
             throw std::runtime_error("cannot install model artifact: " + error.message());
+        fs::remove(partial_revision_path(partial), error);
         FileState state{};
         if (file_state(destination, artifact.size, state))
             write_verification_marker(destination, artifact, state);
@@ -1056,6 +1162,7 @@ materialize(const Model& model, const Artifact& artifact) {
             throw std::runtime_error("cannot install tokenizer artifact: " + error.message());
         }
         fs::remove(partial, error);
+        fs::remove(partial_revision_path(partial), error);
     }
     if (!cli_quiet() && !cli_json())
         std::fprintf(stderr, "[model] ready: %s\n", path_utf8(destination).c_str());

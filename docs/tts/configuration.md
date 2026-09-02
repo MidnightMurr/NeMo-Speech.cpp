@@ -41,17 +41,24 @@ when present. The older split layout (`classify/tokenize_and_classify.far`,
 
 The optional `riva_server` supports `RivaSpeechSynthesis.Synthesize`,
 `SynthesizeOnline`, and `GetRivaSynthesisConfig`. It takes plain text in
-`SynthesizeSpeechRequest.text`, supports native Magpie tokenizers for `en`,
-`es`, `de`, `fr`, `it`, `vi`, `zh`, `hi`, and `ja`, and returns `LINEAR_PCM`
-s16le at the NanoCodec sample rate. Japanese and Mandarin are included when
-`NEMO_SPEECH_TTS_WITH_JA` and `NEMO_SPEECH_TTS_WITH_ZH`, respectively, are
-enabled at build time; both default to `OFF`. Mandarin uses bundled Jieba and
+`SynthesizeSpeechRequest.text` and returns `LINEAR_PCM` s16le at the NanoCodec
+sample rate. The loaded Magpie tokenizer/model determines the supported
+languages. Both v2602 and v2607 support `en`, `es`, `de`, `fr`, `it`, `vi`,
+`zh`, `hi`, and `ja`. Arabic (`ar-AE`, `ar-SA`, and `ar-MSA`), Korean (`ko`),
+and Brazilian Portuguese (`pt-BR`) require a matching v2607 tokenizer and
+model; v2602 does not support or advertise those codes. Japanese and Mandarin
+also require the respective `NEMO_SPEECH_TTS_WITH_JA` and
+`NEMO_SPEECH_TTS_WITH_ZH` build options, both of which default to `OFF`. Native
+tokenizers are cached by language. Mandarin uses bundled Jieba and
 pypinyin-compatible data together with the model's pinyin-to-phoneme
 dictionary. Set `MAGPIE_MANDARIN_G2P_DIR` only to override the bundled Mandarin
 data directory.
 
-`GetRivaSynthesisConfig` advertises the compiled-in TTS languages and the
-dotted voice names accepted by synthesis requests.
+`GetRivaSynthesisConfig` advertises the TTS languages supported by the loaded
+Magpie tokenizer/model in `language_code` and exposes the per-language dotted
+voice names in `voices_by_language`. The legacy `voice_name`, `subvoices`, and
+`voices` parameters remain available for clients that assemble voice names
+themselves.
 
 TTS auto-enables when `tts.magpie-model`, `tts.codec-model`, and
 `tts.tokenizer-model-dir` are all set; force with `tts.enabled`.
@@ -137,7 +144,7 @@ All keys nest under `tts.`. Defaults shown; CLI alias listed where one exists.
 | `tts.magpie-model` | - | - | MagpieTTS GGUF token generator (required) |
 | `tts.codec-model` | - | - | NanoCodec decoder GGUF (required) |
 | `tts.tokenizer-model-dir` | - | - | extracted Magpie `.nemo` dir (required) |
-| `tts.tokenizer.sentence-limit.<lang>` | - | per language (`en` 45 ... `ja` 40) | sentence-chunking threshold in words (characters for `zh`/`ja`); subkeys `en`, `es`, `fr`, `vi`, `it`, `de`, `zh`, `hi`, `ja` |
+| `tts.tokenizer.sentence-limit.<lang>` | - | per language (`en` 45 ... `ja` 40) | sentence-chunking threshold in words (characters for `zh`/`ja`); subkeys `en`, `es`, `fr`, `vi`, `it`, `de`, `zh`, `hi`, `ja`, `ar`, `ko`, `pt` |
 | `tts.tn-model-dir` | - | - | enables Sparrowhawk TN with this grammar dir; requires `NEMO_SPEECH_WITH_NORM=ON` |
 | `tts.language-code` | - | `en-US` | default text language code |
 | `tts.voice-name` | - | - | default voice name or speaker index |
@@ -160,7 +167,7 @@ All keys nest under `tts.`. Defaults shown; CLI alias listed where one exists.
 
 | key | CLI alias | default | meaning |
 |---|---|---|---|
-| `tts.chunk-frames` | - | `3` | codec frames per streamed audio chunk |
+| `tts.chunk-frames` | - | `4` | codec frames per streamed audio chunk |
 | `tts.codec-queue-depth` | - | `4` | codec worker queue depth |
 | `tts.codec-history-frames` | - | `-1` | rolling codec history frames |
 | `tts.codec-future-frames` | - | `1` | rolling codec future frames |
@@ -177,7 +184,7 @@ All keys nest under `tts.`. Defaults shown; CLI alias listed where one exists.
 | `tts.codec-threads` | - | `0` | codec CPU threads; `0` = use `threads` |
 | `tts.lt-backend` | - | `auto` | local-transformer backend: `auto`/`cpu`/`cuda` |
 | `tts.lt-fp32` | `--tts.local-transformer-fp32` | `false` | run the local transformer in FP32 |
-| `tts.sampling-backend` | - | `auto` | sampling backend: `auto`/`cpu`/`cuda` |
+| `tts.sampling-backend` | - | `auto` | sampling backend; `auto` uses CUDA when the Magpie/local-transformer path is CUDA, otherwise CPU |
 | `tts.uma-mode` | - | `auto` | CUDA managed memory: `auto`/`off`/`on` |
 | `tts.longform` | - | `auto` | sentence-chunk longform mode: `auto`/`off`/`on` |
 
