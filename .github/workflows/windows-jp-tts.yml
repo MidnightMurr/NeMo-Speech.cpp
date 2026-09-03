@@ -4,9 +4,9 @@ name: CMake on a single platform
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "voicechat" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "voicechat" ]
   workflow_dispatch:
 
 jobs:
