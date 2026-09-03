@@ -77,20 +77,76 @@ jobs:
           path: ~\AppData\Local\vcpkg\archives
           key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
-      # --- SAVE BINARIES (ARTIFACT UPLOAD) ---
-      - name: Upload compiled binaries
+# --- INSPECT BUILD DIR & STAGE ARTIFACTS ---
+      - name: Inspect build directory and stage artifacts
+        if: steps.build.outcome == 'success'
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build\windows-cpu"
+          $distDir  = Join-Path $env:GITHUB_WORKSPACE "dist"
+
+          Write-Host "=== Top-level contents of $buildDir ==="
+          Get-ChildItem -Path $buildDir | Select-Object Name, Mode, Length | Format-Table -AutoSize
+
+          Write-Host "=== Locating MeCab / NAIST-jdic / OpenJTalk dictionary data ==="
+          Get-ChildItem -Path "$buildDir\*" -Recurse -Include "*open_jtalk*", "*jdic*", "*.dic", "*.bin" | Select-Object FullName
+
+          # 1. Install SDK layout (bin, include, lib, share)
+          Write-Host "=== Installing SDK into $distDir ==="
+          cmake --install $buildDir --prefix $distDir --config Release
+
+          # 2. Ensure standard directories exist
+          @("bin", "include", "lib", "share") | ForEach-Object {
+            $dir = Join-Path $distDir $_
+            if (-not (Test-Path $dir)) {
+              New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            }
+          }
+
+          # 3. Copy top-level/output static libraries (.lib) if not installed by CMake
+          # Note: Avoid recursive search to prevent copying CMake intermediate/compiler files
+          Get-ChildItem -Path "$buildDir\bin", "$buildDir\lib" -Filter "*.lib" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName -Destination "$distDir\lib" -Force
+          }
+
+          # 4. Copy compiled OpenJTalk/MeCab binary dictionary (char.bin, matrix.bin, sys.dic, unk.dic)
+          $srcDic = Join-Path $buildDir "open_jtalk_dic"
+          if (Test-Path $srcDic) {
+            Write-Host "Copying compiled open_jtalk_dic..."
+            $dest1 = Join-Path $distDir "open_jtalk_dic"
+            $dest2 = Join-Path $distDir "bin\open_jtalk_dic"
+
+            New-Item -ItemType Directory -Path $dest1 -Force | Out-Null
+            New-Item -ItemType Directory -Path $dest2 -Force | Out-Null
+
+            Copy-Item -Path "$srcDic\*" -Destination $dest1 -Recurse -Force
+            Copy-Item -Path "$srcDic\*" -Destination $dest2 -Recurse -Force
+          }
+
+          # 5. Copy raw NAIST-jdic source files (naist-jdic.csv, defs)
+          $srcDicSrc = Join-Path $buildDir "open_jtalk_dic_src"
+          if (Test-Path $srcDicSrc) {
+            Write-Host "Copying naist-jdic source files..."
+            $destSrc = Join-Path $distDir "open_jtalk_dic_src"
+            New-Item -ItemType Directory -Path $destSrc -Force | Out-Null
+            Copy-Item -Path "$srcDicSrc\*" -Destination $destSrc -Recurse -Force
+          }
+
+          Write-Host "=== Staged contents ready for packaging ==="
+          Get-ChildItem -Path $distDir | Select-Object Name, Mode | Format-Table -AutoSize
+
+      # --- UPLOAD ARTIFACT ---
+      - name: Upload full package (bin, include, lib, share, and naist-jdic)
         if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: nemo-speech-windows-cpu-ja
-          path: |
-            build/windows-cpu/bin/*.exe
-            build/windows-cpu/bin/*.dll
-          retention-days: 14
+          name: nemo-speech-windows-cpu-ja-full
+          path: dist/
+          retention-days: 2
 
-     # - name: Unit tests
-     #   shell: pwsh
-     #   run: ctest --test-dir build\windows-cpu --output-on-failure --timeout 600
+      - name: Unit tests
+        shell: pwsh
+        run: ctest --test-dir build\windows-cpu --output-on-failure --timeout 600
 
       - name: Cache models
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
