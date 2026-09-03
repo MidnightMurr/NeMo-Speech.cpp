@@ -32,35 +32,39 @@ jobs:
             -DGGML_CUDA=OFF \
             -DGGML_VULKAN=OFF \
             -DNEMO_USE_CUDA=OFF \
-            -DNEMO_USE_VULKAN=OFF
-            -DNEMO_SPEECH_BUILD_SERVER=OFF 
+            -DNEMO_USE_VULKAN=OFF \
+            -DNEMO_ENABLE_JAPANESE=ON \
+            -DNEMO_TTS_ENABLE_JAPANESE=ON \
+            -DNEMO_BUILD_ASR=OFF \
+            -DNEMO_SPEECH_BUILD_SERVER=OFF \
+            -DNEMO_SPEECH_BUILD_ASR=OFF \
+            -DNEMO_SPEECH_BUILD_MIC_CAPTURE=OFF \
+            -DNEMO_SPEECH_BUILD_GRPC=OFF \
             -DNEMO_BUILD_TESTS=OFF \
             -DNEMO_BUILD_EXAMPLES=ON \
             -DNEMO_SPEECH_BUILD_HTTP=OFF \
-            -DNEMO_BUILD_ASR=OFF \
             -DNEMO_ENABLE_TTS=ON \
-            -DNEMO_ENABLE_JAPANESE=ON \
-            -DNEMO_TTS_ENABLE_JAPANESE=ON
+            
+            -DNEMO_SPEECH_BUILD_DIAR=OFF \
+            -DNEMO_SPEECH_BUILD_NMT=OFF \
 
       - name: Build
+        shell: bash
         run: |
           cmake --build build --config Release --parallel $(nproc)
-
-      - name: Prepare Artifacts
+          
+      - name: Stage Artifacts
         shell: bash
         run: |
           mkdir -p dist
-          # Collect all binaries, DLLs, and libraries
-          # find build -type f \( -name "*.exe" -o -name "*.dll" \) -not -path "*/CMakeFiles/*" -exec cp {} dist/ \;
+          # Collect generated .exe and .dll files
           find build -type f \( -name "*.exe" -o -name "*.dll" \) -path "*/Release/*" -exec cp {} dist/ \;
-          ls -lh dist/
-
-          # Also copy Japanese phonemizer dictionaries if generated/present
-          find build -type d -name "open_jtalk_dic_utf_8-1.11" -exec cp -r {} dist/ \; 2>/dev/null || true
-          find build -type d -name "dict" -exec cp -r {} dist/ \; 2>/dev/null || true
+          # Collect dictionary files if generated under build/
+          find build -type d -name "open_jtalk_dic_utf_8*" -exec cp -r {} dist/ \; 2>/dev/null || true
 
       - name: Upload Binaries
         uses: actions/upload-artifact@v4
         with:
           name: nemo-speech-cpp-windows-cpu-ja
           path: dist/
+          if-no-files-found: error
