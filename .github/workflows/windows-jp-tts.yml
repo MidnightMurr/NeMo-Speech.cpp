@@ -1,6 +1,6 @@
 # This starter workflow is for a CMake project running on a single platform. There is a different starter workflow if you need cross-platform coverage.
 # See: https://github.com/actions/starter-workflows/blob/main/ci/cmake-multi-platform.yml
-name: CMake on a single platform
+name: nemo-speech-cpp-windows-cpu-ja
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Setup MSVC developer environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -30,27 +30,34 @@ jobs:
           cmake -B build -A x64 \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_CUDA=OFF \
+            -DGGML_VULKAN=OFF \
             -DNEMO_USE_CUDA=OFF \
+            -DNEMO_USE_VULKAN=OFF
+            -DNEMO_SPEECH_BUILD_SERVER=OFF 
             -DNEMO_BUILD_TESTS=OFF \
             -DNEMO_BUILD_EXAMPLES=ON \
-            -NEMO_SPEECH_BUILD_HTTP=OFF \
+            -DNEMO_SPEECH_BUILD_HTTP=OFF \
             -DNEMO_BUILD_ASR=OFF \
-            -DNEMO_ENABLE_TTS=ON \
             -DNEMO_ENABLE_TTS=ON \
             -DNEMO_ENABLE_JAPANESE=ON \
             -DNEMO_TTS_ENABLE_JAPANESE=ON
 
       - name: Build
         run: |
-          cmake --build build --config Release --parallel
+          cmake --build build --config Release --parallel $(nproc)
 
       - name: Prepare Artifacts
         shell: bash
         run: |
           mkdir -p dist
           # Collect all binaries, DLLs, and libraries
-          find build -type f \( -name "*.exe" -o -name "*.dll" \) -not -path "*/CMakeFiles/*" -exec cp {} dist/ \;
+          # find build -type f \( -name "*.exe" -o -name "*.dll" \) -not -path "*/CMakeFiles/*" -exec cp {} dist/ \;
+          find build -type f \( -name "*.exe" -o -name "*.dll" \) -path "*/Release/*" -exec cp {} dist/ \;
           ls -lh dist/
+
+          # Also copy Japanese phonemizer dictionaries if generated/present
+          find build -type d -name "open_jtalk_dic_utf_8-1.11" -exec cp -r {} dist/ \; 2>/dev/null || true
+          find build -type d -name "dict" -exec cp -r {} dist/ \; 2>/dev/null || true
 
       - name: Upload Binaries
         uses: actions/upload-artifact@v4
