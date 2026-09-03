@@ -77,6 +77,17 @@ jobs:
           path: ~\AppData\Local\vcpkg\archives
           key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
+      # --- SAVE BINARIES (ARTIFACT UPLOAD) ---
+      - name: Upload compiled binaries
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nemo-speech-windows-cpu-ja
+          path: |
+            build/windows-cpu/bin/*.exe
+            build/windows-cpu/bin/*.dll
+          retention-days: 14
+
      # - name: Unit tests
      #   shell: pwsh
      #   run: ctest --test-dir build\windows-cpu --output-on-failure --timeout 600
