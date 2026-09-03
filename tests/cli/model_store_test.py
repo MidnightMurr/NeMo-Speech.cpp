@@ -70,6 +70,7 @@ def run(binary: str, environment: dict[str, str], *arguments: str) -> subprocess
         env=environment,
         check=False,
         text=True,
+        encoding="utf-8",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -312,7 +313,7 @@ def main() -> None:
             revision_partial.parent.mkdir(parents=True)
             revision_partial.write_bytes(b"x" * 5)
             pathlib.Path(f"{revision_partial}.revision").write_text(
-                f"{STALE_ASR_ARTIFACT_REVISION}\n", encoding="utf-8"
+                f"{STALE_ASR_ARTIFACT_REVISION}\n", encoding="utf-8", newline="\n"
             )
             revision_environment = {
                 **environment,
@@ -344,7 +345,7 @@ def main() -> None:
             unstable_partial.parent.mkdir(parents=True)
             unstable_partial.write_bytes(unstable_payload)
             pathlib.Path(f"{unstable_partial}.revision").write_text(
-                f"{'0' * 40}\n", encoding="utf-8"
+                f"{'0' * 40}\n", encoding="utf-8", newline="\n"
             )
             unstable_environment = {
                 **environment,
@@ -425,16 +426,19 @@ def main() -> None:
             assert "acme/tiny-tts/tokenizer" in invalid_revision["message"]
             write_index(index, hashlib.sha256(PAYLOAD).hexdigest(), tokenizer_tar)
 
-            missing_environment = {
-                **environment,
-                "PATH": str(root / "empty-path"),
-                "NEMO_SPEECH_MODEL_DIR": str(root / "missing-curl-cache"),
-            }
-            missing = expect_json_error(
-                run(binary, missing_environment, "--json", "pull", "tiny-asr"), 1
-            )
-            assert "curl executable" in missing["message"]
-            assert "Local model paths" in missing["message"]
+            if os.name != "nt":
+                # On Windows the CLI resolves curl.exe with SearchPathW, which
+                # searches System32 before PATH, so an empty PATH cannot hide it.
+                missing_environment = {
+                    **environment,
+                    "PATH": str(root / "empty-path"),
+                    "NEMO_SPEECH_MODEL_DIR": str(root / "missing-curl-cache"),
+                }
+                missing = expect_json_error(
+                    run(binary, missing_environment, "--json", "pull", "tiny-asr"), 1
+                )
+                assert "curl executable" in missing["message"]
+                assert "Local model paths" in missing["message"]
 
             unsafe_environment = {
                 **environment,
