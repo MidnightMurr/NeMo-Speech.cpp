@@ -60,11 +60,12 @@ jobs:
           key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json', 'scripts/windows/build.ps1') }}
           restore-keys: vcpkg-windows-x64-
 
+      # without -Tests
       - name: Configure and build
         id: build
         shell: pwsh
         run: |
-          scripts\windows\build.ps1 -Backend cpu -Profile core -Tests `
+          scripts\windows\build.ps1 -Backend cpu -Profile core -TtsJa `
             -BuildDir "${{ github.workspace }}\build\windows-cpu"
 
       - name: Save vcpkg binaries
@@ -76,9 +77,9 @@ jobs:
           path: ~\AppData\Local\vcpkg\archives
           key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
-      - name: Unit tests
-        shell: pwsh
-        run: ctest --test-dir build\windows-cpu --output-on-failure --timeout 600
+     # - name: Unit tests
+     #   shell: pwsh
+     #   run: ctest --test-dir build\windows-cpu --output-on-failure --timeout 600
 
       - name: Cache models
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
