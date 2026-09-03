@@ -33,6 +33,8 @@ jobs:
             -DNEMO_USE_CUDA=OFF \
             -DNEMO_BUILD_TESTS=OFF \
             -DNEMO_BUILD_EXAMPLES=ON \
+            -DNEMO_BUILD_ASR=OFF \
+            -DNEMO_ENABLE_TTS=ON \
             -DNEMO_ENABLE_TTS=ON \
             -DNEMO_ENABLE_JAPANESE=ON \
             -DNEMO_TTS_ENABLE_JAPANESE=ON
