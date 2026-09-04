@@ -29,7 +29,7 @@ env:
 
 jobs:
   windows-cpu:
-    name: Windows Cuda
+    name: Windows Vulkan
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: windows-2022
     timeout-minutes: 120
@@ -48,7 +48,7 @@ jobs:
           if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
             choco install -y ninja --no-progress
           }
-
+    
       - name: Restore vcpkg binaries
         # actions/cache only saves in its post step when the job succeeds, so
         # a failing test run threw away 30 minutes of dependency builds.
@@ -60,12 +60,18 @@ jobs:
           key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json', 'scripts/windows/build.ps1') }}
           restore-keys: vcpkg-windows-x64-
 
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: latest
+          cache: true
+      
       # without -Tests
       - name: Configure and build
         id: build
         shell: pwsh
         run: |
-          scripts\windows\build.ps1 -Backend cuda -Profile full -TtsJa -TtsZh -Tests -BuildDir "${{ github.workspace }}\build\windows"
+          scripts\windows\build.ps1 -Backend vulkan -Profile full -TtsJa -TtsZh -Tests -BuildDir "${{ github.workspace }}\build\windows"
 
       - name: Save vcpkg binaries
         # Keys are immutable, so only save a fully built dependency set. Test
