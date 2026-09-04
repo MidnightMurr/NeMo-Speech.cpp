@@ -63,9 +63,46 @@ jobs:
       - name: LunarG Vulkan SDK
         uses: jakoch/install-vulkan-sdk-action@v1
         with:
-          vulkan_version: 1.4.304.0 # this version might work
+          vulkan_version: 1.4.304.0
           install_runtime: true
-          cache: true  
+          cache: true
+
+      - name: Ensure SPIRV-Headers CMake Config
+        shell: pwsh
+        run: |
+          $vulkanDir = $env:VULKAN_SDK
+          $targetDir = "$vulkanDir\Lib\cmake\SPIRV-Headers"
+          $targetFile = "$targetDir\SPIRV-HeadersConfig.cmake"
+
+          if (Test-Path $targetFile) {
+            Write-Host "SPIRV-HeadersConfig.cmake already present at $targetFile"
+            exit 0
+          }
+
+          # 1. If LunarG placed it under share\cmake\SPIRV-Headers, copy it over
+          $shareDir = "$vulkanDir\share\cmake\SPIRV-Headers"
+          if (Test-Path "$shareDir\SPIRV-HeadersConfig.cmake") {
+            Write-Host "Found SPIRV-Headers in share\cmake, copying to Lib\cmake..."
+            New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+            Copy-Item -Path "$shareDir\*" -Destination $targetDir -Recurse -Force
+            exit 0
+          }
+
+          # 2. Otherwise, install SPIRV-Headers directly into the Vulkan SDK
+          Write-Host "Installing Khronos SPIRV-Headers into $vulkanDir..."
+          git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git spirv-headers-src
+          cmake -B spirv-headers-src/build -S spirv-headers-src `
+            -DCMAKE_INSTALL_PREFIX="$vulkanDir" `
+            -DCMAKE_INSTALL_DATADIR="Lib"
+          cmake --install spirv-headers-src/build
+          Remove-Item -Recurse -Force spirv-headers-src
+
+          # 3. Ensure runtime DLL (vulkan-1.dll) is on PATH for ctest and smoke tests
+          if (Test-Path "$vulkanDir\runtime\x64") {
+            Add-Content $env:GITHUB_PATH "$vulkanDir\runtime\x64"
+          } elseif (Test-Path "$vulkanDir\runtime") {
+            Add-Content $env:GITHUB_PATH "$vulkanDir\runtime"
+          }
 
 #     - name: LunarG Vulkan SDK
 #       shell: pwsh
