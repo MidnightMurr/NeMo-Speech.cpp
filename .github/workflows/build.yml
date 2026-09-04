@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize submodules
-        run: git submodule update --init --depth 1 ggml llama.cpp
+        run: git submodule update --init --depth 1 ggml llama.cpp third_party/open_jtalk third_party/cppjieba
 
       - name: Install Ninja
         shell: pwsh
@@ -65,8 +65,8 @@ jobs:
         id: build
         shell: pwsh
         run: |
-          scripts\windows\build.ps1 -Backend cpu -Profile core -TtsJa `
-            -BuildDir "${{ github.workspace }}\build\windows-cpu"
+          scripts\windows\build.ps1 -Backend vulkan -Profile full -TtsJa -TtsZh`
+            -BuildDir "${{ github.workspace }}\build\windows"
 
       - name: Save vcpkg binaries
         # Keys are immutable, so only save a fully built dependency set. Test
@@ -82,7 +82,7 @@ jobs:
         if: steps.build.outcome == 'success'
         shell: pwsh
         run: |
-          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build\windows-cpu"
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build\windows"
           $distDir  = Join-Path $env:GITHUB_WORKSPACE "dist"
 
           Write-Host "=== Top-level contents of $buildDir ==="
@@ -140,7 +140,7 @@ jobs:
         if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: nemo-speech-windows-cpu-ja-full
+          name: nemo-speech-windows-ja-full
           path: dist/
           retention-days: 2
 
@@ -158,6 +158,6 @@ jobs:
         shell: pwsh
         run: |
           python tests\ci\model_smoke.py `
-            --binary build\windows-cpu\bin\nemo-speech.exe `
+            --binary build\windows\bin\nemo-speech.exe `
             --backend cpu `
             --audio test_files\asr\wav\test\jfk.wav
