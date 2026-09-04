@@ -29,9 +29,9 @@ env:
 
 jobs:
   windows-cpu:
-    name: Windows CPU
+    name: Windows Cuda
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 120
     steps:
       - name: Checkout repository
@@ -65,7 +65,7 @@ jobs:
         id: build
         shell: pwsh
         run: |
-          scripts\windows\build.ps1 -Backend vulkan -Profile full -TtsJa -TtsZh -BuildDir "${{ github.workspace }}\build\windows"
+          scripts\windows\build.ps1 -Backend cuda -Profile full -TtsJa -TtsZh -Tests -BuildDir "${{ github.workspace }}\build\windows"
 
       - name: Save vcpkg binaries
         # Keys are immutable, so only save a fully built dependency set. Test
@@ -139,13 +139,13 @@ jobs:
         if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: nemo-speech-windows-ja-full
+          name: nemo-speech-windows-ja-zh-full
           path: dist/
           retention-days: 2
 
       - name: Unit tests
         shell: pwsh
-        run: ctest --test-dir build\windows-cpu --output-on-failure --timeout 600
+        run: ctest --test-dir build\windows --output-on-failure --timeout 600
 
       - name: Cache models
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
