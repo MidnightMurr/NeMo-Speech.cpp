@@ -65,8 +65,7 @@ jobs:
         id: build
         shell: pwsh
         run: |
-          scripts\windows\build.ps1 -Backend vulkan -Profile full -TtsJa -TtsZh`
-            -BuildDir "${{ github.workspace }}\build\windows"
+          scripts\windows\build.ps1 -Backend vulkan -Profile full -TtsJa -TtsZh -BuildDir "${{ github.workspace }}\build\windows"
 
       - name: Save vcpkg binaries
         # Keys are immutable, so only save a fully built dependency set. Test
